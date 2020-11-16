@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	"github.com/operator-framework/operator-lib/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +30,19 @@ const (
 	DiscoveryServiceEnabledValue            string = "enabled"
 	DiscoveryServiceLabelKey                string = "marin3r.3scale.net/discovery-service"
 	DiscoveryServiceCertificateHashLabelKey string = "marin3r.3scale.net/server-certificate-hash"
+
+	/* Default values */
+	DefaultMetricsPort   uint32 = 8383
+	DefaultWebhookPort   uint32 = 8443
+	DefaultXdsServerPort uint32 = 18000
+)
+
+type ServiceType string
+
+const (
+	ClusterIPType    ServiceType = "ClusterIP"
+	LoadBalancerType ServiceType = "LoadBalancer"
+	HeadlessType     ServiceType = "Headless"
 )
 
 // DiscoveryServiceSpec defines the desired state of DiscoveryService
@@ -55,6 +70,22 @@ type DiscoveryServiceSpec struct {
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// PKIConfig has configuration for the PKI that marin3r manages for the
+	// different certificates it requires
+	// +optional
+	PKIConfig *PKIConfig `json:"pkiConfg,omitempty"`
+	// XdsServerPort is the port where the xDS server listens. Defaults to 18000.
+	// +optional
+	XdsServerPort *uint32 `json:"xdsPort,omitempty"`
+	// WebhookPort is the port where the Pod mutating webhooks listens. Defaults to 8443.
+	// +optional
+	WebhookPort *uint32 `json:"webhookPort,omitempty"`
+	// MetricsPort is the port where metrics are served. Defaults to 8383.
+	// +optional
+	MetricsPort *uint32 `json:"metricsPort,omitempty"`
+	// ServiceConfig configures the way the DiscoveryService endpoints are exposed
+	// +optional
+	ServiceConfig *ServiceConfig `json:"ServiceConfig,omitempty"`
 }
 
 // DiscoveryServiceStatus defines the observed state of DiscoveryService
@@ -62,6 +93,27 @@ type DiscoveryServiceStatus struct {
 	// Conditions represent the latest available observations of an object's state
 	// +operator-sdk:gen-csv:customresourcedefinitions.statusDescriptors=true
 	Conditions status.Conditions `json:"conditions"`
+}
+
+// PKIConfig has configuration for the PKI that marin3r manages for the
+// different certificates it requires
+type PKIConfig struct {
+	RootCertificateAuthority *CertificateOptions `json:"rootCertificateAuthority"`
+	ServerCertificate        *CertificateOptions `json:"serverCertificate"`
+}
+
+// CertificateOptions specifies options to generate the server certificate used both
+// for the xDS server and the mutating webhook server.
+type CertificateOptions struct {
+	SecretName string `json:"secretName"`
+	ValidFor   int64  `json:"validFor"`
+}
+
+// ServiceConfig has options to configure the way the Service
+// is deployed
+type ServiceConfig struct {
+	Name string      `json:"name,omitempty"`
+	Type ServiceType `json:"type,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -92,6 +144,73 @@ func (d *DiscoveryService) Resources() corev1.ResourceRequirements {
 
 func (d *DiscoveryService) defaultDeploymentResources() corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{}
+}
+
+const (
+	pkiRootCertificateDefaultValidity         int64  = 3600 * 24 * 365 * 3 // 3 years
+	pkiRootCertificateDefaultSecretNamePrefix string = "marin3r-ca-cert"
+
+	pkiServerCertificateDefaultValidity         int64  = 3600 * 24 * 90 // 90 days
+	pkiServerCertificateDefaultSecretNamePrefix string = "marin3r-server-cert"
+)
+
+// GetRootCertificateAuthorityOptions returns the CertificateOptions for the root CA
+func (d *DiscoveryService) GetRootCertificateAuthorityOptions() *CertificateOptions {
+	if d.Spec.PKIConfig != nil && d.Spec.PKIConfig.RootCertificateAuthority != nil {
+		return d.Spec.PKIConfig.RootCertificateAuthority
+	}
+
+	return &CertificateOptions{
+		SecretName: fmt.Sprintf("%s-%s", pkiRootCertificateDefaultSecretNamePrefix, d.Name),
+		ValidFor:   pkiRootCertificateDefaultValidity,
+	}
+}
+
+// GetSeverCertificateOptions returns the CertificateOptions for the root CA
+func (d *DiscoveryService) GetSeverCertificateOptions() *CertificateOptions {
+	if d.Spec.PKIConfig != nil && d.Spec.PKIConfig.ServerCertificate != nil {
+		return d.Spec.PKIConfig.ServerCertificate
+	}
+
+	return &CertificateOptions{
+		SecretName: fmt.Sprintf("%s-%s", pkiServerCertificateDefaultSecretNamePrefix, d.Name),
+		ValidFor:   pkiServerCertificateDefaultValidity,
+	}
+}
+
+func (d *DiscoveryService) GetXdsServerPort() uint32 {
+	if d.Spec.XdsServerPort != nil {
+		return *d.Spec.XdsServerPort
+	}
+	return DefaultXdsServerPort
+}
+
+func (d *DiscoveryService) GetMetricsPort() uint32 {
+	if d.Spec.XdsServerPort != nil {
+		return *d.Spec.XdsServerPort
+	}
+	return DefaultMetricsPort
+}
+
+func (d *DiscoveryService) GetWebhookPort() uint32 {
+	if d.Spec.XdsServerPort != nil {
+		return *d.Spec.XdsServerPort
+	}
+	return DefaultWebhookPort
+}
+
+func (d *DiscoveryService) GetServiceConfig() *ServiceConfig {
+	if d.Spec.ServiceConfig != nil {
+		return d.Spec.ServiceConfig
+	}
+	return &ServiceConfig{
+		Name: d.OwnedObjectName(),
+		Type: ClusterIPType,
+	}
+}
+
+func (d *DiscoveryService) OwnedObjectName() string {
+	return fmt.Sprintf("%s-%s", "discoveryservice", d.GetName())
 }
 
 // +kubebuilder:object:root=true
